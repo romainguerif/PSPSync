@@ -1,45 +1,64 @@
 # PSP Sync
 
+![screenshot](screenshot.png)
+
 Sync save data between a real PSP and PPSSPP — works on macOS, Linux, and Windows.
 
-## What it does
+## Features
 
-- **PSP → PC** : Copy saves from your PSP to your computer before playing on PPSSPP
-- **PC → PSP** : Send saves back to your PSP when you're done
-- Smart sync: only copies saves that are newer than the destination
-- Auto-detects your PSP when plugged in via USB
+- **PSP → PC** — Pull saves from your PSP before playing on PPSSPP
+- **PC → PSP** — Push saves back to your PSP when you're done
+- **Smart sync** — Only copies saves that are newer than the destination
+- **Auto-detect** — Finds your PSP automatically when plugged in via USB
+- **Custom folders** — Set custom PSP and PPSSPP paths, saved between sessions
+- **Cross-platform** — Native look on macOS, Windows, and Linux
 
 ## Requirements
 
-- Python 3 (tkinter included by default)
-- A PSP connected in USB mode (shows up as a drive)
+- Python 3.7+
+- [pywebview](https://pywebview.flowrl.com/) — for the UI
 
-## Launch
+## Install & Launch
 
 ```bash
+pip install pywebview
 python3 pspsync.py
 ```
 
-That's it. No compilation, no install, no dependencies.
+That's it. No compilation needed.
+
+### Linux
+
+```bash
+pip install pywebview[gtk]
+python3 pspsync.py
+```
+
+### Windows
+
+```bash
+pip install pywebview
+python pspsync.py
+```
 
 ## How it works
 
-| OS | PSP detection | PPSSPP saves |
+The app syncs the `PSP/SAVEDATA/` folder between your real PSP and a local directory used by PPSSPP.
+
+| OS | PSP detection | Default PPSSPP path |
 |---|---|---|
 | macOS | `/Volumes/PSP` | `./PPSSPP-PSP/PSP/SAVEDATA/` |
 | Linux | `/media/*/PSP` or `/mnt/PSP` | `./PPSSPP-PSP/PSP/SAVEDATA/` |
 | Windows | Scans drive letters (D:\, E:\, ...) | `./PPSSPP-PSP/PSP/SAVEDATA/` |
 
-PPSSPP saves are stored next to the script in `PPSSPP-PSP/PSP/SAVEDATA/`. Point PPSSPP to this folder as its memstick directory.
+Both paths are configurable via the UI. Settings are saved in `pspsync.json`.
 
-## macOS .app (optional)
+Point PPSSPP to the `PPSSPP-PSP` folder as its memstick directory, and your saves will be shared.
 
-```bash
-pip3 install py2app
-python3 setup.py py2app -A
-open dist/PSP\ Sync.app
-```
+## Only saves
+
+PSP Sync only touches `PSP/SAVEDATA/` — no ISOs, no plugins, no system files.
 
 ---
 
-*Made by [Noème](https://github.com/romainguerif)*
+*Made by [Noeme](https://github.com/romainguerif)*

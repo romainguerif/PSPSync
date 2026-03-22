@@ -1,103 +1,84 @@
 #!/usr/bin/env python3
 """
-PSP Sync — Synchronise les sauvegardes entre une vraie PSP et PPSSPP.
+PSP Sync — Sync save data between a real PSP and PPSSPP.
 """
 
 import os
+import json
 import shutil
 import time
 import threading
-import tkinter as tk
-from tkinter import font as tkfont
-from datetime import datetime
-
-# ─── Platform detection ──────────────────────────────────────────────────────
-
 import platform
 import string
+from datetime import datetime
 
-SYSTEM = platform.system()  # "Darwin", "Linux", "Windows"
+import webview
+
+# ─── Platform ────────────────────────────────────────────────────────────────
+
+SYSTEM = platform.system()
 
 def find_psp_volume():
-    """Find PSP mounted volume across platforms."""
     if SYSTEM == "Darwin":
-        path = "/Volumes/PSP"
-        if os.path.isdir(path):
-            return path
+        if os.path.isdir("/Volumes/PSP"):
+            return "/Volumes/PSP"
     elif SYSTEM == "Linux":
-        # Common mount points
-        for base in ["/media", "/mnt", os.path.expanduser("~/media")]:
+        for base in ["/media", "/mnt"]:
             if not os.path.isdir(base):
                 continue
-            # Check /media/<user>/PSP or /media/PSP
-            for root, dirs, _ in os.walk(base):
-                if "PSP" in dirs:
-                    candidate = os.path.join(root, "PSP")
-                    if os.path.isdir(os.path.join(candidate, "PSP", "SAVEDATA")):
-                        return candidate
-                # Also check if the current dir IS named PSP
-                break  # only top-level
             psp = os.path.join(base, "PSP")
             if os.path.isdir(os.path.join(psp, "PSP", "SAVEDATA")):
                 return psp
-            # Check user subfolders (e.g. /media/romain/PSP)
-            if os.path.isdir(base):
-                for sub in os.listdir(base):
-                    psp = os.path.join(base, sub, "PSP")
-                    if os.path.isdir(os.path.join(psp, "PSP", "SAVEDATA")):
-                        return psp
+            for sub in os.listdir(base):
+                psp = os.path.join(base, sub, "PSP")
+                if os.path.isdir(os.path.join(psp, "PSP", "SAVEDATA")):
+                    return psp
     elif SYSTEM == "Windows":
-        # Scan drive letters for PSP
         for letter in string.ascii_uppercase:
             drive = f"{letter}:\\"
             if os.path.isdir(os.path.join(drive, "PSP", "SAVEDATA")):
                 return drive
     return None
 
-def get_ppsspp_default():
-    """Get default PPSSPP memstick path per platform."""
-    if SYSTEM == "Darwin":
-        return os.path.expanduser("~/.config/ppsspp/PSP/SAVEDATA")
-    elif SYSTEM == "Linux":
-        return os.path.expanduser("~/.config/ppsspp/PSP/SAVEDATA")
-    elif SYSTEM == "Windows":
-        docs = os.path.join(os.environ.get("USERPROFILE", ""), "Documents")
-        return os.path.join(docs, "PPSSPP", "PSP", "SAVEDATA")
-    return None
-
 # ─── Config ──────────────────────────────────────────────────────────────────
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
-PPSSPP_LOCAL = os.path.join(APP_DIR, "PPSSPP-PSP", "PSP", "SAVEDATA")
+CONFIG_FILE = os.path.join(APP_DIR, "pspsync.json")
+DEFAULT_PPSSPP = os.path.join(APP_DIR, "PPSSPP-PSP", "PSP", "SAVEDATA")
 
-# These are updated dynamically
-PSP_SAVEDATA = None
-PPSSPP_SAVEDATA = PPSSPP_LOCAL
+def load_config():
+    if os.path.isfile(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
 
-# ─── Colors ──────────────────────────────────────────────────────────────────
+def save_config(cfg):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
 
-BG       = "#1A1A2E"
-BG_CARD  = "#232342"
-ACCENT   = "#6C5CE7"
-ACCENT_H = "#7D6FF0"
-SUCCESS  = "#00B894"
-DANGER   = "#E17055"
-TEXT     = "#FFFFFF"
-TEXT_DIM = "#8888AA"
+config = load_config()
 
 # ─── Sync Logic ──────────────────────────────────────────────────────────────
 
-def is_psp_connected():
-    global PSP_SAVEDATA
+def get_psp_savedata():
+    custom = config.get("psp_volume", "")
+    if custom:
+        sd = os.path.join(custom, "PSP", "SAVEDATA")
+        if os.path.isdir(sd):
+            return sd
     vol = find_psp_volume()
     if vol:
-        PSP_SAVEDATA = os.path.join(vol, "PSP", "SAVEDATA")
-        return os.path.isdir(PSP_SAVEDATA)
-    PSP_SAVEDATA = None
-    return False
+        return os.path.join(vol, "PSP", "SAVEDATA")
+    return None
+
+def get_ppsspp_savedata():
+    return config.get("ppsspp_savedata", DEFAULT_PPSSPP)
 
 def count_saves(path):
-    if not os.path.isdir(path):
+    if not path or not os.path.isdir(path):
         return 0
     return len([d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))])
 
@@ -105,19 +86,18 @@ def sync_savedata(src, dst):
     os.makedirs(dst, exist_ok=True)
     copied, skipped, errors = [], [], []
     if not os.path.isdir(src):
-        return copied, skipped, [f"Source introuvable : {src}"]
+        return copied, skipped, [f"Source not found: {src}"]
     for name in sorted(os.listdir(src)):
-        src_f = os.path.join(src, name)
-        dst_f = os.path.join(dst, name)
+        src_f, dst_f = os.path.join(src, name), os.path.join(dst, name)
         if not os.path.isdir(src_f):
             continue
         try:
-            src_files = [f for f in os.listdir(src_f) if os.path.isfile(os.path.join(src_f, f))]
-            src_mt = max((os.path.getmtime(os.path.join(src_f, f)) for f in src_files), default=0)
+            sf = [f for f in os.listdir(src_f) if os.path.isfile(os.path.join(src_f, f))]
+            src_mt = max((os.path.getmtime(os.path.join(src_f, f)) for f in sf), default=0)
             dst_mt = 0
             if os.path.isdir(dst_f):
-                dst_files = [f for f in os.listdir(dst_f) if os.path.isfile(os.path.join(dst_f, f))]
-                dst_mt = max((os.path.getmtime(os.path.join(dst_f, f)) for f in dst_files), default=0)
+                df = [f for f in os.listdir(dst_f) if os.path.isfile(os.path.join(dst_f, f))]
+                dst_mt = max((os.path.getmtime(os.path.join(dst_f, f)) for f in df), default=0)
             if src_mt > dst_mt:
                 if os.path.exists(dst_f):
                     shutil.rmtree(dst_f)
@@ -129,177 +109,282 @@ def sync_savedata(src, dst):
             errors.append(f"{name}: {e}")
     return copied, skipped, errors
 
-# ─── Rounded rectangle helper ───────────────────────────────────────────────
+# ─── API for JS ──────────────────────────────────────────────────────────────
 
-def round_rect(canvas, x1, y1, x2, y2, r=20, **kwargs):
-    points = [
-        x1+r, y1, x1+r, y1, x2-r, y1, x2-r, y1, x2, y1, x2, y1+r,
-        x2, y1+r, x2, y2-r, x2, y2-r, x2, y2, x2-r, y2, x2-r, y2,
-        x1+r, y2, x1+r, y2, x1, y2, x1, y2-r, x1, y2-r, x1, y1+r,
-        x1, y1+r, x1, y1
-    ]
-    return canvas.create_polygon(points, smooth=True, **kwargs)
-
-# ─── App ─────────────────────────────────────────────────────────────────────
-
-class PSPSyncApp:
+class Api:
     def __init__(self):
-        self.root = tk.Tk()
-        self.root.title("PSP Sync")
-        self.root.geometry("500x640")
-        self.root.resizable(False, False)
-        self.root.configure(bg=BG)
+        self.window = None
 
-        # Fonts (cross-platform)
-        if SYSTEM == "Darwin":
-            sans, mono = "Helvetica Neue", "Menlo"
-        elif SYSTEM == "Windows":
-            sans, mono = "Segoe UI", "Consolas"
-        else:
-            sans, mono = "DejaVu Sans", "DejaVu Sans Mono"
-        self.font_title = tkfont.Font(family=sans, size=24, weight="bold")
-        self.font_btn = tkfont.Font(family=sans, size=15, weight="bold")
-        self.font_label = tkfont.Font(family=sans, size=12)
-        self.font_big = tkfont.Font(family=sans, size=22, weight="bold")
-        self.font_log = tkfont.Font(family=mono, size=11)
+    def get_status(self):
+        psp = get_psp_savedata()
+        ppsspp = get_ppsspp_savedata()
+        return {
+            "psp_connected": psp is not None,
+            "psp_saves": count_saves(psp),
+            "pc_saves": count_saves(ppsspp),
+            "psp_path": config.get("psp_volume", "") or "Auto-detect",
+            "ppsspp_path": ppsspp,
+        }
 
-        self._build()
-        self._update_status()
-
-    def _build(self):
-        root = self.root
-
-        # ── Header ──
-        hdr = tk.Frame(root, bg=BG)
-        hdr.pack(fill="x", padx=30, pady=(25, 0))
-
-        tk.Label(hdr, text="PSP Sync", font=self.font_title, fg=TEXT, bg=BG).pack(side="left")
-
-        status_fr = tk.Frame(hdr, bg=BG)
-        status_fr.pack(side="right")
-        self.status_dot = tk.Label(status_fr, text="\u25CF", font=("Helvetica", 14), fg=DANGER, bg=BG)
-        self.status_dot.pack(side="right", padx=(4, 0))
-        self.status_lbl = tk.Label(status_fr, text="PSP déconnectée", font=self.font_label, fg=TEXT_DIM, bg=BG)
-        self.status_lbl.pack(side="right")
-
-        # ── Sep ──
-        tk.Frame(root, bg="#333355", height=1).pack(fill="x", padx=30, pady=(18, 18))
-
-        # ── Info cards ──
-        cards = tk.Frame(root, bg=BG)
-        cards.pack(fill="x", padx=30)
-
-        self.psp_count = self._card(cards, "PSP", "—", side="left")
-        self.pc_count = self._card(cards, "PPSSPP", "—", side="right")
-
-        # ── Buttons ──
-        btn_area = tk.Frame(root, bg=BG)
-        btn_area.pack(fill="x", padx=30, pady=(22, 0))
-
-        self.btn_pull = self._make_button(btn_area, "PSP  \u2192  PC", ACCENT, self._pull)
-        self.btn_pull.pack(fill="x", pady=(0, 10))
-
-        self.btn_push = self._make_button(btn_area, "PC  \u2192  PSP", "#3A3A5C", self._push)
-        self.btn_push.pack(fill="x")
-
-        # ── Log ──
-        log_fr = tk.Frame(root, bg=BG_CARD, bd=0, highlightthickness=0)
-        log_fr.pack(fill="both", expand=True, padx=30, pady=(18, 25))
-
-        self.log = tk.Text(
-            log_fr, bg=BG_CARD, fg="#CCCCDD", font=self.font_log,
-            bd=0, highlightthickness=0, wrap="word", padx=10, pady=10,
-            insertbackground=BG_CARD, cursor="arrow"
-        )
-        self.log.pack(fill="both", expand=True)
-        self.log.configure(state="disabled")
-        self._log("En attente…")
-
-    def _card(self, parent, title, value, side):
-        fr = tk.Frame(parent, bg=BG_CARD, padx=16, pady=10)
-        fr.pack(side=side, expand=True, fill="both", padx=(0 if side == "left" else 4, 4 if side == "left" else 0))
-        tk.Label(fr, text=title, font=self.font_label, fg=TEXT_DIM, bg=BG_CARD, anchor="w").pack(fill="x")
-        lbl = tk.Label(fr, text=value, font=self.font_big, fg=TEXT, bg=BG_CARD, anchor="w")
-        lbl.pack(fill="x", pady=(2, 0))
-        return lbl
-
-    def _make_button(self, parent, text, color, cmd):
-        btn = tk.Button(
-            parent, text=text, font=self.font_btn,
-            fg=TEXT, bg=color, activebackground=ACCENT_H, activeforeground=TEXT,
-            bd=0, highlightthickness=0, relief="flat",
-            height=2, cursor="hand2", command=cmd
-        )
-        return btn
-
-    def _log(self, msg):
-        ts = datetime.now().strftime("%H:%M:%S")
-        self.log.configure(state="normal")
-        self.log.insert("end", f"[{ts}]  {msg}\n")
-        self.log.see("end")
-        self.log.configure(state="disabled")
-
-    def _update_status(self):
-        connected = is_psp_connected()
-        if connected:
-            self.status_dot.configure(fg=SUCCESS)
-            self.status_lbl.configure(text="PSP connectée")
-            self.psp_count.configure(text=f"{count_saves(PSP_SAVEDATA)} saves")
-            self.btn_pull.configure(state="normal")
-            self.btn_push.configure(state="normal")
-        else:
-            self.status_dot.configure(fg=DANGER)
-            self.status_lbl.configure(text="PSP déconnectée")
-            self.psp_count.configure(text="—")
-            self.btn_pull.configure(state="disabled")
-            self.btn_push.configure(state="disabled")
-        pc = count_saves(PPSSPP_SAVEDATA)
-        self.pc_count.configure(text=f"{pc} saves" if pc else "—")
-        self.root.after(2000, self._update_status)
-
-    def _set_busy(self, busy):
-        s = "disabled" if busy else "normal"
-        self.btn_pull.configure(state=s)
-        self.btn_push.configure(state=s)
-
-    def _pull(self):
-        if not is_psp_connected():
-            self._log("PSP non détectée !")
-            return
-        self._set_busy(True)
-        self._log("Sync PSP → PC…")
-        threading.Thread(target=self._sync, args=(PSP_SAVEDATA, PPSSPP_SAVEDATA, "PSP → PC"), daemon=True).start()
-
-    def _push(self):
-        if not is_psp_connected():
-            self._log("PSP non détectée !")
-            return
-        self._set_busy(True)
-        self._log("Sync PC → PSP…")
-        threading.Thread(target=self._sync, args=(PPSSPP_SAVEDATA, PSP_SAVEDATA, "PC → PSP"), daemon=True).start()
-
-    def _sync(self, src, dst, label):
+    def pull(self):
+        psp = get_psp_savedata()
+        if not psp:
+            return {"log": "PSP not detected!"}
         t0 = time.time()
-        copied, skipped, errors = sync_savedata(src, dst)
-        dt = time.time() - t0
-        def update():
-            if copied:
-                self._log(f"{label} — {len(copied)} save(s) copiée(s) ({dt:.1f}s)")
-                for n in copied:
-                    self._log(f"   {n}")
-            if skipped:
-                self._log(f"{len(skipped)} save(s) déjà à jour")
-            if errors:
-                for e in errors:
-                    self._log(f"ERREUR: {e}")
-            if not copied and not errors:
-                self._log(f"{label} — Tout synchronisé")
-            self._set_busy(False)
-        self.root.after(0, update)
+        copied, skipped, errors = sync_savedata(psp, get_ppsspp_savedata())
+        return self._result(copied, skipped, errors, time.time() - t0, "PSP → PC")
 
-    def run(self):
-        self.root.mainloop()
+    def push(self):
+        psp = get_psp_savedata()
+        if not psp:
+            return {"log": "PSP not detected!"}
+        t0 = time.time()
+        copied, skipped, errors = sync_savedata(get_ppsspp_savedata(), psp)
+        return self._result(copied, skipped, errors, time.time() - t0, "PC → PSP")
 
+    def _result(self, copied, skipped, errors, dt, label):
+        lines = []
+        if copied:
+            lines.append(f"{label} — {len(copied)} save(s) copied ({dt:.1f}s)")
+            for n in copied:
+                lines.append(f"  → {n}")
+        if skipped:
+            lines.append(f"{len(skipped)} save(s) already up to date")
+        if errors:
+            for e in errors:
+                lines.append(f"ERROR: {e}")
+        if not copied and not errors:
+            lines.append(f"{label} — All synced")
+        return {"log": "\n".join(lines)}
+
+    def pick_psp(self):
+        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            d = result[0]
+            if os.path.isdir(os.path.join(d, "PSP", "SAVEDATA")):
+                config["psp_volume"] = d
+                save_config(config)
+                return {"path": d}
+            else:
+                return {"error": f"No PSP/SAVEDATA in {d}"}
+        return {}
+
+    def reset_psp(self):
+        config["psp_volume"] = ""
+        save_config(config)
+        return {"path": "Auto-detect"}
+
+    def pick_ppsspp(self):
+        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        if result and len(result) > 0:
+            d = result[0]
+            config["ppsspp_savedata"] = d
+            save_config(config)
+            return {"path": d}
+        return {}
+
+# ─── HTML ────────────────────────────────────────────────────────────────────
+
+HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'Segoe UI', sans-serif;
+    background: #0A0A0A;
+    color: #fff;
+    padding: 20px 24px;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .title { font-size: 22px; font-weight: 700; }
+  .status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #777; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; }
+  .dot.on { background: #fff; }
+
+  .sep { height: 1px; background: #222; margin: 12px 0; }
+
+  .field { margin-bottom: 12px; }
+  .field-label { font-size: 11px; color: #666; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .field-row { display: flex; gap: 6px; align-items: center; }
+  .field-path {
+    flex: 1; background: #151515; padding: 6px 10px; border-radius: 6px;
+    font-family: 'Menlo', 'Consolas', monospace; font-size: 11px;
+    color: #999; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border: 1px solid #222;
+  }
+  .btn-sm {
+    background: #1A1A1A; color: #ccc; border: 1px solid #333; padding: 6px 12px;
+    border-radius: 6px; font-size: 11px; cursor: pointer; white-space: nowrap;
+  }
+  .btn-sm:hover { background: #252525; border-color: #444; }
+  .btn-sm.accent { color: #fff; }
+
+  .cards { display: flex; gap: 8px; margin: 12px 0; }
+  .card {
+    flex: 1; background: #151515; border-radius: 8px; padding: 10px 14px;
+    border: 1px solid #222;
+  }
+  .card-label { font-size: 11px; color: #666; }
+  .card-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+
+  .actions { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+  .btn {
+    width: 100%; padding: 14px; border: none; border-radius: 10px;
+    font-size: 15px; font-weight: 700; color: #000; cursor: pointer;
+    transition: filter 0.15s;
+  }
+  .btn:hover { filter: brightness(0.9); }
+  .btn:active { filter: brightness(0.8); }
+  .btn.pull { background: #fff; }
+  .btn.push { background: #333; color: #fff; }
+  .btn:disabled { opacity: 0.3; cursor: default; filter: none; }
+
+  .log {
+    background: #111; border-radius: 8px; padding: 10px 12px;
+    font-family: 'Menlo', 'Consolas', monospace; font-size: 10px;
+    color: #888; line-height: 1.6; min-height: 80px; max-height: 140px;
+    overflow-y: auto; border: 1px solid #222;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="title">PSP Sync</div>
+  <div class="status">
+    <span id="statusText">Disconnected</span>
+    <div class="dot" id="statusDot"></div>
+  </div>
+</div>
+
+<div class="sep"></div>
+
+<div class="field">
+  <div class="field-label">PSP Folder</div>
+  <div class="field-row">
+    <div class="field-path" id="pspPath">Auto-detect</div>
+    <button class="btn-sm" onclick="pickPsp()">Browse</button>
+    <button class="btn-sm accent" onclick="resetPsp()">Auto</button>
+  </div>
+</div>
+
+<div class="field">
+  <div class="field-label">PPSSPP Folder</div>
+  <div class="field-row">
+    <div class="field-path" id="ppssppPath">...</div>
+    <button class="btn-sm" onclick="pickPpsspp()">Browse</button>
+  </div>
+</div>
+
+<div class="sep"></div>
+
+<div class="cards">
+  <div class="card">
+    <div class="card-label">PSP</div>
+    <div class="card-value" id="pspCount">—</div>
+  </div>
+  <div class="card">
+    <div class="card-label">PPSSPP</div>
+    <div class="card-value" id="pcCount">—</div>
+  </div>
+</div>
+
+<div class="actions">
+  <button class="btn pull" id="btnPull" onclick="pull()" disabled>PSP → PC</button>
+  <button class="btn push" id="btnPush" onclick="push()" disabled>PC → PSP</button>
+</div>
+
+<div class="log" id="log"></div>
+
+<script>
+function ts() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8);
+}
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.innerHTML += '[' + ts() + ']  ' + msg.replace(/\\n/g, '<br>') + '<br>';
+  el.scrollTop = el.scrollHeight;
+}
+
+function shorten(p, n) {
+  if (!p) return '—';
+  return p.length <= n ? p : '...' + p.slice(-(n - 3));
+}
+
+async function refresh() {
+  const s = await pywebview.api.get_status();
+  document.getElementById('statusDot').className = 'dot' + (s.psp_connected ? ' on' : '');
+  document.getElementById('statusText').textContent = s.psp_connected ? 'Connected' : 'Disconnected';
+  document.getElementById('pspCount').textContent = s.psp_connected ? s.psp_saves + ' saves' : '—';
+  document.getElementById('pcCount').textContent = s.pc_saves > 0 ? s.pc_saves + ' saves' : '—';
+  document.getElementById('btnPull').disabled = !s.psp_connected;
+  document.getElementById('btnPush').disabled = !s.psp_connected;
+  document.getElementById('pspPath').textContent = shorten(s.psp_path, 36);
+  document.getElementById('ppssppPath').textContent = shorten(s.ppsspp_path, 40);
+}
+
+async function pull() {
+  document.getElementById('btnPull').disabled = true;
+  document.getElementById('btnPush').disabled = true;
+  log('Syncing PSP → PC...');
+  const r = await pywebview.api.pull();
+  log(r.log);
+  refresh();
+}
+
+async function push() {
+  document.getElementById('btnPull').disabled = true;
+  document.getElementById('btnPush').disabled = true;
+  log('Syncing PC → PSP...');
+  const r = await pywebview.api.push();
+  log(r.log);
+  refresh();
+}
+
+async function pickPsp() {
+  const r = await pywebview.api.pick_psp();
+  if (r.error) log(r.error);
+  else if (r.path) { log('PSP: ' + r.path); refresh(); }
+}
+
+async function resetPsp() {
+  await pywebview.api.reset_psp();
+  log('PSP: auto-detect');
+  refresh();
+}
+
+async function pickPpsspp() {
+  const r = await pywebview.api.pick_ppsspp();
+  if (r.path) { log('PPSSPP: ' + r.path); refresh(); }
+}
+
+window.addEventListener('pywebviewready', () => {
+  log('Ready');
+  refresh();
+  setInterval(refresh, 2000);
+});
+</script>
+
+</body>
+</html>
+"""
+
+# ─── Main ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    PSPSyncApp().run()
+    api = Api()
+    window = webview.create_window(
+        "PSP Sync", html=HTML, js_api=api,
+        width=440, height=520, resizable=False,
+        background_color="#0A0A0A"
+    )
+    api.window = window
+    webview.start()
