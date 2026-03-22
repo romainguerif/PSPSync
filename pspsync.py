@@ -11,12 +11,68 @@ import tkinter as tk
 from tkinter import font as tkfont
 from datetime import datetime
 
+# ─── Platform detection ──────────────────────────────────────────────────────
+
+import platform
+import string
+
+SYSTEM = platform.system()  # "Darwin", "Linux", "Windows"
+
+def find_psp_volume():
+    """Find PSP mounted volume across platforms."""
+    if SYSTEM == "Darwin":
+        path = "/Volumes/PSP"
+        if os.path.isdir(path):
+            return path
+    elif SYSTEM == "Linux":
+        # Common mount points
+        for base in ["/media", "/mnt", os.path.expanduser("~/media")]:
+            if not os.path.isdir(base):
+                continue
+            # Check /media/<user>/PSP or /media/PSP
+            for root, dirs, _ in os.walk(base):
+                if "PSP" in dirs:
+                    candidate = os.path.join(root, "PSP")
+                    if os.path.isdir(os.path.join(candidate, "PSP", "SAVEDATA")):
+                        return candidate
+                # Also check if the current dir IS named PSP
+                break  # only top-level
+            psp = os.path.join(base, "PSP")
+            if os.path.isdir(os.path.join(psp, "PSP", "SAVEDATA")):
+                return psp
+            # Check user subfolders (e.g. /media/romain/PSP)
+            if os.path.isdir(base):
+                for sub in os.listdir(base):
+                    psp = os.path.join(base, sub, "PSP")
+                    if os.path.isdir(os.path.join(psp, "PSP", "SAVEDATA")):
+                        return psp
+    elif SYSTEM == "Windows":
+        # Scan drive letters for PSP
+        for letter in string.ascii_uppercase:
+            drive = f"{letter}:\\"
+            if os.path.isdir(os.path.join(drive, "PSP", "SAVEDATA")):
+                return drive
+    return None
+
+def get_ppsspp_default():
+    """Get default PPSSPP memstick path per platform."""
+    if SYSTEM == "Darwin":
+        return os.path.expanduser("~/.config/ppsspp/PSP/SAVEDATA")
+    elif SYSTEM == "Linux":
+        return os.path.expanduser("~/.config/ppsspp/PSP/SAVEDATA")
+    elif SYSTEM == "Windows":
+        docs = os.path.join(os.environ.get("USERPROFILE", ""), "Documents")
+        return os.path.join(docs, "PPSSPP", "PSP", "SAVEDATA")
+    return None
+
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-PSP_VOLUME = "/Volumes/PSP"
-PSP_SAVEDATA = os.path.join(PSP_VOLUME, "PSP", "SAVEDATA")
-PPSSPP_MEMSTICK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "PPSSPP-PSP")
-PPSSPP_SAVEDATA = os.path.join(PPSSPP_MEMSTICK, "PSP", "SAVEDATA")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+PPSSPP_LOCAL = os.path.join(APP_DIR, "PPSSPP-PSP", "PSP", "SAVEDATA")
+
+# These are updated dynamically
+PSP_SAVEDATA = None
+PPSSPP_SAVEDATA = PPSSPP_LOCAL
 
 # ─── Colors ──────────────────────────────────────────────────────────────────
 
@@ -32,7 +88,13 @@ TEXT_DIM = "#8888AA"
 # ─── Sync Logic ──────────────────────────────────────────────────────────────
 
 def is_psp_connected():
-    return os.path.isdir(PSP_SAVEDATA)
+    global PSP_SAVEDATA
+    vol = find_psp_volume()
+    if vol:
+        PSP_SAVEDATA = os.path.join(vol, "PSP", "SAVEDATA")
+        return os.path.isdir(PSP_SAVEDATA)
+    PSP_SAVEDATA = None
+    return False
 
 def count_saves(path):
     if not os.path.isdir(path):
@@ -88,12 +150,18 @@ class PSPSyncApp:
         self.root.resizable(False, False)
         self.root.configure(bg=BG)
 
-        # Fonts
-        self.font_title = tkfont.Font(family="Helvetica Neue", size=24, weight="bold")
-        self.font_btn = tkfont.Font(family="Helvetica Neue", size=15, weight="bold")
-        self.font_label = tkfont.Font(family="Helvetica Neue", size=12)
-        self.font_big = tkfont.Font(family="Helvetica Neue", size=22, weight="bold")
-        self.font_log = tkfont.Font(family="Menlo", size=11)
+        # Fonts (cross-platform)
+        if SYSTEM == "Darwin":
+            sans, mono = "Helvetica Neue", "Menlo"
+        elif SYSTEM == "Windows":
+            sans, mono = "Segoe UI", "Consolas"
+        else:
+            sans, mono = "DejaVu Sans", "DejaVu Sans Mono"
+        self.font_title = tkfont.Font(family=sans, size=24, weight="bold")
+        self.font_btn = tkfont.Font(family=sans, size=15, weight="bold")
+        self.font_label = tkfont.Font(family=sans, size=12)
+        self.font_big = tkfont.Font(family=sans, size=22, weight="bold")
+        self.font_log = tkfont.Font(family=mono, size=11)
 
         self._build()
         self._update_status()
