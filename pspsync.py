@@ -45,6 +45,7 @@ def find_psp_volume():
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(APP_DIR, "pspsync.json")
 DEFAULT_PPSSPP = os.path.join(APP_DIR, "PPSSPP-PSP", "PSP", "SAVEDATA")
+BACKUPS_DIR = os.path.join(APP_DIR, "backups")
 
 def load_config():
     if os.path.isfile(CONFIG_FILE):
@@ -157,6 +158,55 @@ class Api:
             lines.append(f"{label} — All synced")
         return {"log": "\n".join(lines)}
 
+    def backup(self):
+        ppsspp = get_ppsspp_savedata()
+        if not ppsspp or not os.path.isdir(ppsspp):
+            return {"log": "No PPSSPP saves to backup"}
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        dst = os.path.join(BACKUPS_DIR, stamp)
+        try:
+            shutil.copytree(ppsspp, dst)
+            n = count_saves(dst)
+            return {"log": f"Backup created: {stamp} ({n} saves)"}
+        except Exception as e:
+            return {"log": f"ERROR: {e}"}
+
+    def list_backups(self):
+        if not os.path.isdir(BACKUPS_DIR):
+            return {"backups": []}
+        backups = []
+        for name in sorted(os.listdir(BACKUPS_DIR), reverse=True):
+            path = os.path.join(BACKUPS_DIR, name)
+            if os.path.isdir(path):
+                n = count_saves(path)
+                backups.append({"name": name, "saves": n})
+        return {"backups": backups}
+
+    def restore(self, name):
+        src = os.path.join(BACKUPS_DIR, name)
+        if not os.path.isdir(src):
+            return {"log": f"Backup not found: {name}"}
+        ppsspp = get_ppsspp_savedata()
+        try:
+            # Clear current saves and restore
+            if os.path.isdir(ppsspp):
+                shutil.rmtree(ppsspp)
+            shutil.copytree(src, ppsspp)
+            n = count_saves(ppsspp)
+            return {"log": f"Restored backup {name} ({n} saves)"}
+        except Exception as e:
+            return {"log": f"ERROR: {e}"}
+
+    def delete_backup(self, name):
+        path = os.path.join(BACKUPS_DIR, name)
+        if not os.path.isdir(path):
+            return {"log": f"Backup not found: {name}"}
+        try:
+            shutil.rmtree(path)
+            return {"log": f"Deleted backup: {name}"}
+        except Exception as e:
+            return {"log": f"ERROR: {e}"}
+
     def pick_psp(self):
         result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
         if result and len(result) > 0:
@@ -245,10 +295,29 @@ HTML = """
   .btn.push { background: #333; color: #fff; }
   .btn:disabled { opacity: 0.3; cursor: default; filter: none; }
 
+  .btn.backup { background: #1A1A1A; color: #888; border: 1px solid #333; font-size: 12px; padding: 10px; }
+  .btn.backup:hover { background: #222; color: #ccc; }
+
+  .backups-panel { margin-top: 8px; }
+  .backup-item {
+    display: flex; align-items: center; justify-content: space-between;
+    background: #111; border: 1px solid #222; border-radius: 6px;
+    padding: 6px 10px; margin-bottom: 4px; font-size: 11px;
+  }
+  .backup-item .name { color: #aaa; font-family: 'Menlo', 'Consolas', monospace; }
+  .backup-item .saves { color: #555; margin-left: 8px; }
+  .backup-item .actions-row { display: flex; gap: 4px; }
+  .backup-item button {
+    background: none; border: 1px solid #333; color: #888; padding: 3px 8px;
+    border-radius: 4px; font-size: 10px; cursor: pointer;
+  }
+  .backup-item button:hover { border-color: #555; color: #fff; }
+  .backup-item button.del:hover { border-color: #555; color: #e55; }
+
   .log {
     background: #111; border-radius: 8px; padding: 10px 12px;
     font-family: 'Menlo', 'Consolas', monospace; font-size: 10px;
-    color: #888; line-height: 1.6; min-height: 80px; max-height: 140px;
+    color: #888; line-height: 1.6; min-height: 80px; max-height: 120px;
     overflow-y: auto; border: 1px solid #222;
   }
 </style>
@@ -298,7 +367,10 @@ HTML = """
 <div class="actions">
   <button class="btn pull" id="btnPull" onclick="pull()" disabled>PSP → PC</button>
   <button class="btn push" id="btnPush" onclick="push()" disabled>PC → PSP</button>
+  <button class="btn backup" onclick="backup()">Backup saves</button>
 </div>
+
+<div class="backups-panel" id="backupsPanel"></div>
 
 <div class="log" id="log"></div>
 
@@ -366,9 +438,45 @@ async function pickPpsspp() {
   if (r.path) { log('PPSSPP: ' + r.path); refresh(); }
 }
 
+async function backup() {
+  log('Creating backup...');
+  const r = await pywebview.api.backup();
+  log(r.log);
+  refreshBackups();
+}
+
+async function refreshBackups() {
+  const r = await pywebview.api.list_backups();
+  const panel = document.getElementById('backupsPanel');
+  if (!r.backups.length) { panel.innerHTML = ''; return; }
+  panel.innerHTML = r.backups.map(b =>
+    '<div class="backup-item">' +
+      '<span><span class="name">' + b.name + '</span><span class="saves"> · ' + b.saves + ' saves</span></span>' +
+      '<span class="actions-row">' +
+        '<button onclick="restore(\'' + b.name + '\')">Restore</button>' +
+        '<button class="del" onclick="delBackup(\'' + b.name + '\')">Delete</button>' +
+      '</span>' +
+    '</div>'
+  ).join('');
+}
+
+async function restore(name) {
+  log('Restoring ' + name + '...');
+  const r = await pywebview.api.restore(name);
+  log(r.log);
+  refresh();
+}
+
+async function delBackup(name) {
+  const r = await pywebview.api.delete_backup(name);
+  log(r.log);
+  refreshBackups();
+}
+
 window.addEventListener('pywebviewready', () => {
   log('Ready');
   refresh();
+  refreshBackups();
   setInterval(refresh, 2000);
 });
 </script>
@@ -381,10 +489,11 @@ window.addEventListener('pywebviewready', () => {
 
 if __name__ == "__main__":
     api = Api()
+    icon_path = os.path.join(APP_DIR, "icon.png")
     window = webview.create_window(
         "PSP Sync", html=HTML, js_api=api,
-        width=440, height=520, resizable=False,
+        width=440, height=580, resizable=True,
         background_color="#0A0A0A"
     )
     api.window = window
-    webview.start()
+    webview.start(icon=icon_path if os.path.isfile(icon_path) else None)

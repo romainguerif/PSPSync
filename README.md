@@ -8,15 +8,16 @@ Sync save data between a real PSP and PPSSPP — works on macOS, Linux, and Wind
 
 - **PSP → PC** — Pull saves from your PSP before playing on PPSSPP
 - **PC → PSP** — Push saves back to your PSP when you're done
+- **Backup & Restore** — Manually backup your saves, restore any previous backup
 - **Smart sync** — Only copies saves that are newer than the destination
 - **Auto-detect** — Finds your PSP automatically when plugged in via USB
 - **Custom folders** — Set custom PSP and PPSSPP paths, saved between sessions
-- **Cross-platform** — Native look on macOS, Windows, and Linux
+- **Cross-platform** — Native rendering on macOS, Windows, and Linux
 
 ## Requirements
 
 - Python 3.7+
-- [pywebview](https://pywebview.flowrl.com/) — for the UI
+- [pywebview](https://pywebview.flowrl.com/)
 
 ## Install & Launch
 
@@ -24,8 +25,6 @@ Sync save data between a real PSP and PPSSPP — works on macOS, Linux, and Wind
 pip install pywebview
 python3 pspsync.py
 ```
-
-That's it. No compilation needed.
 
 ### Linux
 
@@ -54,6 +53,10 @@ The app syncs the `PSP/SAVEDATA/` folder between your real PSP and a local direc
 Both paths are configurable via the UI. Settings are saved in `pspsync.json`.
 
 Point PPSSPP to the `PPSSPP-PSP` folder as its memstick directory, and your saves will be shared.
+
+## Backups
+
+Click **Backup saves** to create a timestamped snapshot of your PPSSPP saves in the `backups/` folder. Each backup can be restored or deleted from the app.
 
 ## Only saves
 
